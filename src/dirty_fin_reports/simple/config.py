@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from .metrics import periods_per_year
+from .env_params import TradingEnvParams
 
 
 @dataclass
@@ -115,6 +116,7 @@ class ProjectConfig:
     theme: str = "synthwave"
     overlays: bool = False
     env: dict = field(default_factory=dict)
+    env_params: TradingEnvParams = field(default_factory=TradingEnvParams)
 
     @property
     def returns_basis(self) -> str:
@@ -169,4 +171,5 @@ def load_project(path: str | Path) -> ProjectConfig:
         theme=str(raw.get("theme", "synthwave")),
         overlays=bool(raw.get("overlays", False)),
         env=dict(raw.get("env") or {}),
+        env_params=TradingEnvParams.from_dict(raw.get("env")),
     )

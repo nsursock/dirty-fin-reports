@@ -62,10 +62,12 @@ from .plausibility import (
 )
 from .viz import Palette, resolve_theme, write_png
 from .figures import figure1, figure2, training_figure
-from .breakdown import BD_COLS, bot_cfg, breakdown, trade_stats
+from .breakdown import BD_COLS, bot_cfg, breakdown, breakdown_trade_stats
 from .synth import generate_ppo, generate_run, generate_sac, generate_trades
 from .config import Plausibility, ProjectConfig, ReportConfig, SynthConfig, load_project
+from .env_params import TradingEnvParams
 from .report import (
+    assemble,
     build_report,
     format_breakdown,
     report_dict,
@@ -122,7 +124,7 @@ __all__ = [
     "BD_COLS",
     "bot_cfg",
     "breakdown",
-    "trade_stats",
+    "breakdown_trade_stats",
     "generate_ppo",
     "generate_run",
     "generate_sac",
@@ -131,7 +133,9 @@ __all__ = [
     "ProjectConfig",
     "ReportConfig",
     "SynthConfig",
+    "TradingEnvParams",
     "load_project",
+    "assemble",
     "build_report",
     "format_breakdown",
     "report_dict",

@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
                          n_steps=project.synth.n_steps,
                          ppo_rows=project.synth.ppo_rows,
                          sac_rows=project.synth.sac_rows,
-                         seed=seed)
+                         seed=seed, env=project.env_params)
             run_dirs.append(rd)
     else:
         run_dirs = [run_dir]

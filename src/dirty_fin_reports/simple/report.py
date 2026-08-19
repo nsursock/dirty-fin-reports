@@ -17,7 +17,7 @@ import numpy as np
 
 from .config import Plausibility, ReportConfig
 from .ledger import coerce_ledger, load, unique_keys, validate
-from .equity import portfolio_curve
+from .equity import per_symbol_curves, portfolio_curve
 from .metrics import metrics
 from .plausibility import aggregate, check_many
 from .trades import by_episode, by_exit, by_side, by_symbol, hold_stats, leverage_stats, trade_stats
@@ -63,19 +63,23 @@ def _training_summary(df, algorithm: str, name: str, ma: int = 10) -> dict:
     return h
 
 
-def report_dict(
+def assemble(
     ledger_rows: list[dict],
     manager_df=None,
     worker_df=None,
     config: ReportConfig | None = None,
     ma: int = 10,
     plausibility: Plausibility | None = None,
-) -> dict:
-    """Compute the whole report bundle from already-loaded inputs.
+) -> tuple[dict, dict, tuple, list]:
+    """Compute the whole report bundle plus its curves in a single pass.
 
-    ``plausibility`` lets a caller tighten/relax the likelihood bounds; the
-    ``Plausibility`` defaults flag history-style implausible numbers (a per-bar
-    "160 Sharpe") as ``high`` severity instead of printing them as fact.
+    This is the single source of truth for every derived value: the equity
+    curves, the portfolio metrics (at ``cfg``'s cadence/rf), ``calmar``, the
+    per-trade stats and the per-symbol curves are all computed exactly once
+    here. Renderers (``figures``, ``breakdown``) consume the returned bundle
+    instead of recomputing from raw inputs.
+
+    Returns ``(report, eq, (symbols, per_symbol_curves), rows)``.
     """
     cfg = config or ReportConfig()
     rows = coerce_ledger(ledger_rows)
@@ -84,6 +88,7 @@ def report_dict(
         raise ValueError("ledger has no trades to report")
 
     eq = portfolio_curve(rows, start=cfg.initial_balance, n_steps=cfg.n_steps)
+    per_sym = per_symbol_curves(rows, start=cfg.initial_balance, n_steps=cfg.n_steps)
     m = metrics(eq["net"], periods_per_year=cfg.periods_per_year,
                 freq=cfg.reporting_freq, rf_annual=cfg.rf_annual)
     net_last = float(eq["net"][-1]) if eq["net"].size else cfg.initial_balance
@@ -125,7 +130,7 @@ def report_dict(
     checks = check_many(plausibility_inputs, (plausibility or Plausibility()).as_dict())
     verdict = aggregate(checks)
 
-    return {
+    report = {
         "config": {
             "timeframe": cfg.timeframe,
             "initial_balance": cfg.initial_balance,
@@ -168,6 +173,27 @@ def report_dict(
             for c in checks
         ],
     }
+    return report, eq, per_sym, rows
+
+
+def report_dict(
+    ledger_rows: list[dict],
+    manager_df=None,
+    worker_df=None,
+    config: ReportConfig | None = None,
+    ma: int = 10,
+    plausibility: Plausibility | None = None,
+) -> dict:
+    """Compute the whole report bundle from already-loaded inputs.
+
+    Thin wrapper over :func:`assemble` that returns only the JSON-safe bundle.
+    ``plausibility`` lets a caller tighten/relax the likelihood bounds; the
+    ``Plausibility`` defaults flag history-style implausible numbers (a per-bar
+    "160 Sharpe") as ``high`` severity instead of printing them as fact.
+    """
+    report, _, _, _ = assemble(ledger_rows, manager_df=manager_df, worker_df=worker_df,
+                               config=config, ma=ma, plausibility=plausibility)
+    return report
 
 
 def _down_perc(first: float, last: float) -> float:
@@ -182,13 +208,17 @@ def _bar_minutes(timeframe: str) -> int:
     return timeframe_minutes(timeframe)
 
 
-def build_report(
+def _assemble_sources(
     src_dir: str | Path,
     config: ReportConfig | None = None,
     n_steps: Optional[int] = None,
     plausibility: Plausibility | None = None,
-) -> dict:
-    """Auto-discover the CSV sources in ``src_dir`` and build the report."""
+) -> tuple[dict, dict, tuple, dict, list]:
+    """Discover + load the CSVs under ``src_dir`` and assemble once.
+
+    Returns ``(report, eq, per_sym, sources, rows)`` so the caller never has to
+    re-load or re-compute any derived value.
+    """
     src = Path(src_dir)
     cfg = config or ReportConfig()
     if n_steps is not None:
@@ -205,10 +235,24 @@ def build_report(
     if sources["worker_sac"] is not None:
         worker_df = load_training_csv(sources["worker_sac"])
 
-    r = report_dict(ledger_rows, manager_df=manager_df, worker_df=worker_df,
-                    config=cfg, plausibility=plausibility)
-    r["sources"] = {k: (str(v) if v is not None else None) for k, v in sources.items()}
-    return r
+    report, eq, per_sym, rows = assemble(ledger_rows, manager_df=manager_df,
+                                         worker_df=worker_df, config=cfg,
+                                         plausibility=plausibility)
+    report["sources"] = {k: (str(v) if v is not None else None)
+                         for k, v in sources.items()}
+    return report, eq, per_sym, sources, rows
+
+
+def build_report(
+    src_dir: str | Path,
+    config: ReportConfig | None = None,
+    n_steps: Optional[int] = None,
+    plausibility: Plausibility | None = None,
+) -> dict:
+    """Auto-discover the CSV sources in ``src_dir`` and build the report."""
+    report, _, _, _, _ = _assemble_sources(src_dir, config=config, n_steps=n_steps,
+                                           plausibility=plausibility)
+    return report
 
 
 def format_breakdown(r: dict) -> str:
@@ -317,19 +361,14 @@ def run_reporter(src_dir: str | Path, out_dir: str | Path | None = None,
     src = Path(src_dir)
     out = Path(out_dir) if out_dir is not None else src
     out.mkdir(parents=True, exist_ok=True)
-    r = build_report(src, config=config, plausibility=plausibility)
+    r, eq, per_sym, sources, rows = _assemble_sources(src, config=config,
+                                                      plausibility=plausibility)
     write_report(r, out / "report.json")
     r["artifacts"] = str(out)
 
     from .figures import figure1, figure2, training_figure
 
     cfg = config or ReportConfig()
-    sources = discover_sources(src)
-    rows = coerce_ledger(load(sources["trades"]))
-    from .equity import per_symbol_curves, portfolio_curve
-
-    eq = portfolio_curve(rows, start=cfg.initial_balance, n_steps=cfg.n_steps)
-    _, per_sym = per_symbol_curves(rows, start=cfg.initial_balance, n_steps=cfg.n_steps)
 
     testing_dir = out
     if sources["trades"] is not None and Path(sources["trades"]).parent.name == "testing":
@@ -347,13 +386,15 @@ def run_reporter(src_dir: str | Path, out_dir: str | Path | None = None,
     ) if (cfg.n_steps is None or cfg.n_steps <= 0) else cfg.n_steps
     bd_cfg = bot_cfg(timeframe=cfg.timeframe, initial_balance=cfg.initial_balance,
                      n_steps=inferred_steps)
-    breakdown(rows, eq["net"], testing_dir / "breakdown.txt", cfg=bd_cfg)
+    breakdown(rows, eq["net"], testing_dir / "breakdown.txt", r["portfolio"],
+              cfg=bd_cfg)
 
     per_sym_arg = per_sym if overlays else None
     status = r["plausibility"]["status"]
     bounds = (plausibility or Plausibility()).as_dict()
     figure1(eq["net"], eq["gross"], eq["steps"], rows,
             testing_dir / f"bot-performance-{status}.png",
+            r["portfolio"], r["trades"]["stats"],
             per_symbol=per_sym_arg, theme=theme, verdict=status,
             periods_per_year=cfg.periods_per_year, freq=cfg.reporting_freq,
             bounds=bounds, start_date=cfg.start_dt,

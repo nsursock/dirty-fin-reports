@@ -4,25 +4,36 @@ from pathlib import Path
 
 from dirty_fin_reports.simple.equity import per_symbol_curves, portfolio_curve
 from dirty_fin_reports.simple.figures import figure1, figure2, training_figure
+from dirty_fin_reports.simple.metrics import metrics
+from dirty_fin_reports.simple.trades import trade_stats
 from dirty_fin_reports.simple.training import load_training_csv
 from conftest import PPO, SAC, TRADES_TWO
 from dirty_fin_reports.simple.ledger import coerce_ledger, load
+
+
+def _pm_ts(eq, rows):
+    pm = metrics(eq["net"], periods_per_year=72576, freq="daily", rf_annual=0.045)
+    return pm, trade_stats(rows)
 
 
 def test_figure1_renders(tmp_path):
     rows = coerce_ledger(load(TRADES_TWO))
     eq = portfolio_curve(rows, start=1000.0)
     _, per_sym = per_symbol_curves(rows, start=1000.0)
+    pm, ts = _pm_ts(eq, rows)
     out = tmp_path / "figure1.png"
-    figure1(eq["net"], eq["gross"], eq["steps"], rows, out, per_symbol=per_sym)
+    figure1(eq["net"], eq["gross"], eq["steps"], rows, out, pm, ts, per_symbol=per_sym)
     assert out.exists()
     assert out.stat().st_size > 32_000  # kaleido wrote real pixels, not a stub
 
 
 def test_figure1_handles_empty_ledger(tmp_path):
     rows = []
+    net = [1000.0, 1050.0]
+    eq = {"net": net}
+    pm, ts = _pm_ts(eq, rows)
     out = tmp_path / "figure1_empty.png"
-    figure1([1000.0, 1050.0], [1000.0, 1055.0], [1, 2], rows, out)
+    figure1(net, [1000.0, 1055.0], [1, 2], rows, out, pm, ts)
     assert out.exists() and out.stat().st_size > 32_000
 
 
@@ -73,9 +84,10 @@ def test_figure1_overlays_flag(tmp_path):
     rows = coerce_ledger(load(TRADES_TWO))
     eq = portfolio_curve(rows, start=1000.0)
     _, per_sym = per_symbol_curves(rows, start=1000.0)
+    pm, ts = _pm_ts(eq, rows)
     for overlays in (False, True):
         out = tmp_path / f"f1_{overlays}.png"
-        figure1(eq["net"], eq["gross"], eq["steps"], rows, out,
+        figure1(eq["net"], eq["gross"], eq["steps"], rows, out, pm, ts,
                 per_symbol=per_sym, overlays=overlays)
         assert out.exists() and out.stat().st_size > 32_000
 

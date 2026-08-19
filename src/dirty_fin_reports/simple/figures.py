@@ -23,12 +23,10 @@ from .training import (
     series,
 )
 from .viz import Palette, base_layout, style_axes, write_png
-from .metrics import metrics as portfolio_metrics
 from .plausibility import check_value
 from .trades import (
     by_exit as by_exit_fn,
     by_side as by_side_fn,
-    trade_stats as trade_stats_fn,
 )
 
 _MIN_PNG = 32_000
@@ -103,6 +101,8 @@ def figure1(
     steps,
     ledger,
     path,
+    pm,
+    ts,
     per_symbol=None,
     theme="synthwave",
     title_prefix="",
@@ -117,11 +117,16 @@ def figure1(
 ):
     """Equity curve, per-trade returns, drawdown and return distribution.
 
+    ``pm`` (portfolio metrics) and ``ts`` (trade stats) are the canonical,
+    already-computed values from ``report_dict``/``assemble`` — this function is
+    a pure renderer and does not recompute them (the old behavior of calling
+    ``metrics``/``trade_stats`` here drifted from ``report.json`` when
+    ``rf_annual``/``freq`` differed).
+
     ``overlays=False`` (default) keeps the equity panel clean — one net and one
     gross line. Set ``overlays=True`` to fade per-symbol curves underneath.
-    Each subplot carries a compact stats card; portfolio metrics come from
-    ``metrics`` at ``freq`` cadence, trade metrics from ``trade_stats``, and any
-    value that trips the ``plausibility`` bounds is colored + marked in place.
+    Each subplot carries a compact stats card; any value that trips the
+    ``plausibility`` bounds is colored + marked in place.
 
     Time axes (equity, trade returns, drawdown) are labeled with real dates
     anchored at ``start_date`` with ``bar_minutes`` bars; their tick labels are
@@ -212,9 +217,7 @@ def figure1(
         fig.add_vline(x=float(np.mean(trade_rets)), line=dict(color=c.accent, width=1.8),
                       row=2, col=2)
 
-    pm = portfolio_metrics(net, periods_per_year=periods_per_year, freq=freq)
     num = partial(_num, c=c, bounds=bounds)
-    ts = trade_stats_fn(ledger)
     n_close = len(ledger)
     liq_count = int(liq.sum())
     max_dd = float(pm.get("max_drawdown") or 0.0)

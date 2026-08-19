@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .ledger import EXIT_TYPES, NUMERIC_COLUMNS
+from .env_params import TradingEnvParams
 
 SYMBOLS = ("BTC", "ETH", "SOL", "AVAX", "BNB", "XRP", "DOGE", "LINK")
 _BASE_PRICES = {
@@ -54,14 +55,17 @@ def generate_trades(
     n_steps: int = 17280,
     initial_balance: float = 1000.0,
     seed: int = 42,
+    env: TradingEnvParams | None = None,
 ) -> list[dict]:
     """A realistic closed-position ledger (bar-indexed times).
 
-    Mirrors the bot's execution model: isolated margin, 20-150x leverage,
-    risk-scaled collateral, per-trade fees + an occasional liquidation, and a
+    Mirrors the bot's execution model: isolated margin, leverage, risk-scaled
+    collateral, per-trade fees + slippage and an occasional liquidation, and a
     mildly positive expectancy so the equity curve is a healthy staircase with
-    visible drawdown episodes.
+    visible drawdown episodes. Fees / slippage / leverage come from ``env``
+    (``TradingEnvParams``), the single source shared with ``bot_cfg``.
     """
+    env = env or TradingEnvParams()
     rng = np.random.default_rng(seed)
     rows: list[dict] = []
     per_ep = max(int(math.ceil(n / n_episodes)), 4)
@@ -77,9 +81,10 @@ def generate_trades(
             trade_id += 1
             symbol = SYMBOLS[int(rng.integers(0, len(SYMBOLS)))]
             side = "long" if rng.random() < 0.86 else "short"
-            lev = float(rng.uniform(20.0, 100.0))
-            risk = float(rng.uniform(0.01, 0.05))
-            collateral = _clamp(equity * risk * rng.uniform(0.7, 1.4), 10.0, 5000.0)
+            lev = float(rng.uniform(env.lev_min, env.lev_max))
+            risk = float(rng.uniform(env.risk_min, env.risk_max))
+            collateral = _clamp(equity * risk * rng.uniform(0.7, 1.4),
+                                env.min_collateral, env.max_collateral)
             notional = collateral * lev
             entry_price = _BASE_PRICES[symbol] * math.exp(rng.normal(0, 0.004))
 
@@ -110,17 +115,22 @@ def generate_trades(
                 else:
                     ret_bps = float(rng.normal(28.0, 60.0) + regime)
                 gross = notional * ret_bps / 10_000.0
-                fee = notional * (0.0003 + 0.0006)
+                fee = notional * (env.open_fee_rate + env.close_fee_rate)
+                slippage = notional * env.slippage_bps / 10_000.0
                 side_charge = 1.0 if side == "long" else -1.0
                 funding = notional * side_charge * float(rng.normal(0.00001, 0.000004))
-                realized = gross - fee - funding
+                realized = gross - fee - funding - slippage
                 realized = _clamp(realized, -collateral, collateral * 8.0)
 
             if side == "long":
                 exit_price = entry_price * (1.0 + realized / max(notional, 1e-9))
             else:
                 exit_price = entry_price * (1.0 - realized / max(notional, 1e-9))
-            exit_price = max(entry_price * 0.5, exit_price)
+            if exit_type == "liquidation":
+                # A liquidation fills at the bankruptcy price, not a fixed
+                # percentage gap: long -> entry*(1 - 1/lev), short -> entry*(1 + 1/lev).
+                exit_price = entry_price * (1.0 - 1.0 / max(lev, 1.0)) if side == "long" \
+                    else entry_price * (1.0 + 1.0 / max(lev, 1.0))
 
             row = {
                 "trade_id": str(trade_id),
@@ -224,6 +234,7 @@ def generate_run(
     ppo_rows: int = 200,
     sac_rows: int = 200,
     seed: int = 42,
+    env: TradingEnvParams | None = None,
 ) -> dict:
     """Write a full synthetic run folder in the trading-bot layout."""
     out = Path(out_dir)
@@ -232,7 +243,8 @@ def generate_run(
     testing.mkdir(parents=True, exist_ok=True)
     training.mkdir(parents=True, exist_ok=True)
 
-    rows = generate_trades(n=n_trades, n_episodes=n_episodes, n_steps=n_steps, seed=seed)
+    rows = generate_trades(n=n_trades, n_episodes=n_episodes, n_steps=n_steps,
+                           seed=seed, env=env)
 
     cols = list(NUMERIC_COLUMNS)
     header = ("trade_id", "episode", "symbol", "side", *cols, "seed_offset",

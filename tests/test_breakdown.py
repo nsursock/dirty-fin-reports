@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dirty_fin_reports.simple.breakdown import BD_COLS, bot_cfg, breakdown, trade_stats
+from dirty_fin_reports.simple.breakdown import BD_COLS, bot_cfg, breakdown, breakdown_trade_stats
 from dirty_fin_reports.simple.synth import (
     PPO_COLUMNS,
     SAC_COLUMNS,
@@ -16,6 +16,7 @@ from dirty_fin_reports.simple.synth import (
 )
 from dirty_fin_reports.simple.equity import portfolio_curve
 from dirty_fin_reports.simple.ledger import coerce_ledger
+from dirty_fin_reports.simple.metrics import metrics
 
 
 @pytest.fixture(scope="module")
@@ -99,8 +100,9 @@ def test_breakdown_header_and_tables(tmp_path, synth_run):
 
     rows = coerce_ledger(load(synth_run["trades"]))
     eq = portfolio_curve(rows, start=1000.0)
+    pm = metrics(eq["net"], periods_per_year=72576, freq="daily", rf_annual=0.045)
     out = tmp_path / "breakdown.txt"
-    text = breakdown(rows, eq["net"], out, cfg=bot_cfg())
+    text = breakdown(rows, eq["net"], out, pm, cfg=bot_cfg())
     assert text.startswith("BREAKDOWN\n=========")
     for section in ("By symbol", "By episode", "By position direction", "By exit",
                     "By outcome", "By leverage", "By hold duration", "By return",
@@ -124,7 +126,8 @@ def test_breakdown_writes_bot_like_lines(tmp_path, synth_run):
 
     rows = coerce_ledger(load(synth_run["trades"]))
     eq = portfolio_curve(rows, start=1000.0)
-    text = breakdown(rows, eq["net"], tmp_path / "bd.txt", cfg=bot_cfg())
+    pm = metrics(eq["net"], periods_per_year=72576, freq="daily", rf_annual=0.045)
+    text = breakdown(rows, eq["net"], tmp_path / "bd.txt", pm, cfg=bot_cfg())
     body = text.splitlines()
     assert body[0] == "BREAKDOWN"
     assert any(l.startswith("seed: 42") for l in body)
@@ -141,7 +144,7 @@ def test_trade_stats_basic():
     trades = [{"realized_pnl": 10.0, "episode": 0, "symbol": "BTC"},
               {"realized_pnl": 10.0, "episode": 0, "symbol": "BTC"},
               {"realized_pnl": -5.0, "episode": 0, "symbol": "BTC"}]
-    st = trade_stats(trades, base=1000.0)
+    st = breakdown_trade_stats(trades, base=1000.0)
     assert st["num"] == 3
     assert st["win_rate"] == pytest.approx(66.6666666667)
     assert st["net"] == pytest.approx(15.0)

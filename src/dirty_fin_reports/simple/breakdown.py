@@ -15,16 +15,12 @@ from pathlib import Path
 import numpy as np
 from tabulate import tabulate
 
-from .metrics import metrics, periods_per_year, timeframe_minutes
+from .metrics import timeframe_minutes
+from .env_params import TradingEnvParams
 
 BD_COLS = ["label", "num trades", "win rate %", "avg win", "avg loss",
            "net profit", "sharpe", "max dd", "risk reward", "sortino", "calmar",
            "profit factor", "ulcer index", "upi"]
-
-_LIQ_THRESH = {
-    "base": 0.90, "floor": 0.67, "ref_lev": 2.0,
-    "hi_lev": 150.0, "lo_lev": 1.0,
-}
 
 
 def bot_cfg(
@@ -32,33 +28,22 @@ def bot_cfg(
     initial_balance: float = 1000.0,
     n_steps: int = 5760,
     returns_basis: str = "collateral",
+    env: TradingEnvParams | None = None,
     **overrides,
 ) -> dict:
     """Build a bot-compatible config dict for the breakdown header/tables.
 
-    Defaults mirror the bot's scalp config (lev 20-150x, isolated margin,
-    fee model, reward and HRL knobs) so the ``BREAKDOWN`` header reads like a
-    real run. Any top-level key in ``overrides`` is merged in (e.g. ``env``,
-    ``data``) for custom runs.
+    The ``env`` block comes from :class:`TradingEnvParams` (the single source
+    shared with the synthetic generator); ``overrides`` may still replace it.
+    Any top-level key in ``overrides`` is merged in (e.g. ``env``, ``data``).
     """
+    env_params = (env or TradingEnvParams()).as_dict()
+    env_params["initial_balance"] = initial_balance
     cfg = {
         "seed": 42,
         "data": {"n_symbols": 8, "n_steps": n_steps, "dt_days": None,
                  "timeframes": {"low": timeframe}},
-        "env": {
-            "n_envs_per_symbol": 256,
-            "lev_min": 20.0, "lev_max": 150.0,
-            "risk_min": 0.01, "risk_max": 0.05,
-            "open_fee_rate": 0.0003, "close_fee_rate": 0.0006,
-            "slippage_bps": 1.0, "holding_fee_daily": 0.00015,
-            "bars_per_day": 288, "liquidation_fee_rate": 0.003,
-            "liq_threshold_base": 0.90, "liq_threshold_floor": 0.67,
-            "liq_threshold_ref_lev": 2.0, "liq_threshold_hi_lev": 150.0,
-            "liq_threshold_lo_lev": 1.0,
-            "min_collateral": 10.0, "max_collateral": 10000.0,
-            "initial_balance": initial_balance, "margin_mode": "isolated",
-            "trade_knob": 2.5,
-        },
+        "env": env_params,
         "reward": {"mode": "normal", "drawdown_penalty": 1.0, "reward_clip": 10.0},
         "hrl": {"goal_every": 6, "goal_dim": 3},
         "manager": {"n_steps": 256},
@@ -99,7 +84,7 @@ def _config_lines(cfg) -> list[str]:
     ]
 
 
-def trade_stats(trades, base: float = 1000.0) -> dict:
+def breakdown_trade_stats(trades, base: float = 1000.0) -> dict:
     """Descriptive per-trade stats (mirrors the trading-bot engine).
 
     ``max_dd`` is the peak-to-trough drawdown of the trade-PnL cumsum scaled
@@ -162,33 +147,27 @@ def _bd_table(title, groups, portfolio) -> list[str]:
                                 colalign=("left",) + ("right",) * (len(BD_COLS) - 1)), ""]
 
 
-def _ppyear(cfg) -> int:
-    low = ((cfg.get("data") or {}).get("timeframes") or {}).get("low", "5m")
-    return periods_per_year(low)
-
-
-def breakdown(ledger: list[dict], net, out_path: str | Path, cfg=None,
-              rets=None) -> str:
+def breakdown(ledger: list[dict], net, out_path: str | Path, pm: dict,
+              cfg=None, rets=None) -> str:
     """Render the text breakdown (bot format) and write it to ``out_path``.
 
     ``ledger`` is the coerced trade rows; ``net`` the bar-indexed portfolio
-    equity curve (mean over the per-episode books). The portfolio risk row
-    (Sharpe / Sortino / Calmar / ulcer / UPI) is computed from ``net`` at the
-    reporting cadence; every subgroup row reports descriptive per-trade stats.
+    equity curve (mean over the per-episode books). ``pm`` is the canonical
+    portfolio-metrics dict computed by ``report.assemble`` (Sharpe / Sortino /
+    Calmar / ulcer / UPI at the reporting cadence) — this function consumes it
+    instead of recomputing, so the breakdown can never drift from
+    ``report.json``. Every subgroup row reports descriptive per-trade stats.
     """
     cfg = cfg or bot_cfg()
     net = np.asarray(net, dtype=float)
     base = float(net[0]) if net.size else 1000.0
-    ret_freq = (cfg.get("returns") or {}).get("freq", "daily")
-    rf_annual = float((cfg.get("returns") or {}).get("rf_annual", 0.045))
-    m = metrics(net, periods_per_year=_ppyear(cfg), freq=ret_freq,
-                rf_annual=rf_annual)
-    port = trade_stats(ledger, base=base)
+    m = pm
+    port = breakdown_trade_stats(ledger, base=base)
     if m:
         port["sharpe"] = m.get("sharpe", 0.0)
         port["sortino"] = m.get("sortino", 0.0)
         port["max_dd"] = 100.0 * float(m.get("max_drawdown", 0.0) or 0.0)
-        port["calmar"] = m.get("cagr", 0.0) / max(abs(float(m.get("max_drawdown", 0.0) or 0.0)), 1e-9)
+        port["calmar"] = m.get("calmar", 0.0)
         port["ulcer_index"] = m.get("ulcer_index")
         port["upi"] = m.get("upi")
 
@@ -196,11 +175,11 @@ def breakdown(ledger: list[dict], net, out_path: str | Path, cfg=None,
         groups = {}
         for t in trades:
             groups.setdefault(keyfn(t), []).append(t)
-        return [(lab, trade_stats(groups[lab], base=base)) for lab in order if lab in groups]
+        return [(lab, breakdown_trade_stats(groups[lab], base=base)) for lab in order if lab in groups]
 
     n = max(len(ledger), 1)
     by_symbol = sorted({t["symbol"] for t in ledger})
-    sym_groups = [(s, trade_stats([t for t in ledger if t["symbol"] == s], base=base))
+    sym_groups = [(s, breakdown_trade_stats([t for t in ledger if t["symbol"] == s], base=base))
                   for s in by_symbol]
 
     ep_order = sorted({int(t.get("episode", 0) or 0) for t in ledger})
@@ -208,9 +187,9 @@ def breakdown(ledger: list[dict], net, out_path: str | Path, cfg=None,
     for e in ep_order:
         ep_trades = [t for t in ledger if int(t.get("episode", 0) or 0) == e]
         off = next((t.get("seed_offset") for t in ep_trades if t.get("seed_offset") is not None), "?")
-        by_episode.append((f"episode {e} (seed+{off})", trade_stats(ep_trades, base=base)))
+        by_episode.append((f"episode {e} (seed+{off})", breakdown_trade_stats(ep_trades, base=base)))
     if len(ep_order) > 1:
-        by_episode.append(("all", trade_stats(ledger, base=base)))
+        by_episode.append(("all", breakdown_trade_stats(ledger, base=base)))
 
     by_side = _bucket(ledger, lambda t: "bull (long)" if t["side"] == "long" else "bear (short)",
                       ["bull (long)", "bear (short)"])
@@ -306,11 +285,12 @@ def breakdown(ledger: list[dict], net, out_path: str | Path, cfg=None,
     def _liq(t):
         lev = max(abs(float(t.get("leverage", 0) or 0)), 1e-9)
         e = (cfg.get("env") or {}) if cfg is not None else {}
-        tbase = float(e.get("liq_threshold_base", _LIQ_THRESH["base"]))
-        tfloor = float(e.get("liq_threshold_floor", _LIQ_THRESH["floor"]))
-        ref = float(e.get("liq_threshold_ref_lev", _LIQ_THRESH["ref_lev"]))
-        hi = float(e.get("liq_threshold_hi_lev", _LIQ_THRESH["hi_lev"]))
-        lo = float(e.get("liq_threshold_lo_lev", _LIQ_THRESH["lo_lev"]))
+        defaults = TradingEnvParams()
+        tbase = float(e.get("liq_threshold_base", defaults.liq_threshold_base))
+        tfloor = float(e.get("liq_threshold_floor", defaults.liq_threshold_floor))
+        ref = float(e.get("liq_threshold_ref_lev", defaults.liq_threshold_ref_lev))
+        hi = float(e.get("liq_threshold_hi_lev", defaults.liq_threshold_hi_lev))
+        lo = float(e.get("liq_threshold_lo_lev", defaults.liq_threshold_lo_lev))
         slope_lo = (tbase - 1.0) / max(ref - lo, 1e-6)
         slope_hi = (tfloor - tbase) / max(hi - ref, 1e-6)
         thr = (1.0 + slope_lo * (lev - lo)) if lev <= ref else (tbase + slope_hi * (lev - ref))
@@ -343,7 +323,7 @@ def breakdown(ledger: list[dict], net, out_path: str | Path, cfg=None,
     _vgroups = {}
     for _i, _t in enumerate(ledger):
         _vgroups.setdefault(_vintage(_i), []).append(_t)
-    by_vintage = [(lab, trade_stats(_vgroups[lab], base=base))
+    by_vintage = [(lab, breakdown_trade_stats(_vgroups[lab], base=base))
                   for lab in ("opening act (first 20%)", "mid-set (20-80%)", "encore (last 20%)")
                   if lab in _vgroups]
 
