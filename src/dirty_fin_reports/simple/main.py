@@ -61,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
                          overlays=project.overlays, plausibility=project.plausibility)
         print(f"run: {rd}")
         print(f"status: {r['plausibility']['status']} ({r['plausibility']['counts']})")
+        rpctxt = "n/a" if r['performance'].get('return_pct') is None else f"{r['performance']['return_pct']:+.1f}%"
+        print(f"performance: {r['performance']['status']} ({rpctxt})")
+        print(f"health: {r['health']['status']}")
+        print(f"recommendation: {r['recommendation']['action']} — {r['recommendation']['reason']}")
         print(f"breakdown: {r['breakdown']}")
         print(f"figures: {r['figure1']} {r['figure2']}")
         if "manager_diag_figure" in r:

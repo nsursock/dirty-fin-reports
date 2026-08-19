@@ -20,6 +20,7 @@ from .ledger import coerce_ledger, load, unique_keys, validate
 from .equity import per_symbol_curves, portfolio_curve
 from .metrics import metrics
 from .plausibility import aggregate, check_many
+from .verdict import health_axis, performance_axis, recommend
 from .trades import by_episode, by_exit, by_side, by_symbol, hold_stats, leverage_stats, trade_stats
 from .training import detect_algorithm, load_training_csv, series, training_health
 
@@ -129,6 +130,11 @@ def assemble(
 
     checks = check_many(plausibility_inputs, (plausibility or Plausibility()).as_dict())
     verdict = aggregate(checks)
+    violations = [c.metric for c in checks if not c.ok]
+    perf = performance_axis(m.get("total_return"))
+    health = health_axis(eq["net"])
+    recommendation = recommend(perf["status"], verdict["status"], health["status"],
+                               violations)
 
     report = {
         "config": {
@@ -165,6 +171,9 @@ def assemble(
             "leverage": leverage,
         },
         "portfolio": m,
+        "performance": perf,
+        "health": health,
+        "recommendation": recommendation,
         "agents": agents,
         "plausibility": verdict,
         "plausibility_checks": [
@@ -310,9 +319,17 @@ def format_breakdown(r: dict) -> str:
         lines.append("")
 
     p = r["plausibility"]
+    perf = r["performance"]
+    health = r["health"]
+    rec = r["recommendation"]
+    rpctxt = "n/a" if perf.get("return_pct") is None else f"{perf['return_pct']:+.1f}%"
+    lines.append(f"Performance: {perf['status']} ({rpctxt})")
+    lines.append(f"Health: {health['status']}"
+                 + (f" — {'; '.join(health['issues'])}" if health["issues"] else ""))
     lines.append(f"Plausibility: {p['status']} ({p['counts']})")
     for reason in p["failed"]:
         lines.append(f"  FLAG: {reason}")
+    lines.append(f"Recommendation: {rec['action']} — {rec['reason']}")
     return "\n".join(lines)
 
 

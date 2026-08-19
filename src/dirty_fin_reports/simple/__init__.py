@@ -60,6 +60,7 @@ from .plausibility import (
     check_value,
     aggregate,
 )
+from .verdict import health_axis, performance_axis, recommend
 from .viz import Palette, resolve_theme, write_png
 from .figures import figure1, figure2, training_figure
 from .breakdown import BD_COLS, bot_cfg, breakdown, breakdown_trade_stats
@@ -115,6 +116,9 @@ __all__ = [
     "Bound",
     "check_value",
     "aggregate",
+    "health_axis",
+    "performance_axis",
+    "recommend",
     "Palette",
     "resolve_theme",
     "write_png",

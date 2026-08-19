@@ -34,6 +34,16 @@ def test_build_report_aggregates_fixture():
     assert r["config"]["reporting_freq"] == "daily"
 
 
+def test_report_has_decoupled_verdict_axes():
+    r = build_report(RUN)
+    assert r["performance"]["status"] == "profitable"
+    assert r["health"]["status"] == "healthy"
+    # The fixture is profitable but statistically implausible: a high-alpha
+    # candidate routed for review, not discarded.
+    assert r["recommendation"]["action"] == "review"
+    assert "high-alpha" in r["recommendation"]["reason"]
+
+
 def test_degenerate_fixture_is_flagged_implausible_not_trusted():
     r = build_report(RUN)
     p = r["plausibility"]
