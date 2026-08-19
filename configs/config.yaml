@@ -1,0 +1,66 @@
+# dirty_fin_reports project configuration.
+# Every parameter of the reporting pipeline lives here; load with
+#   from dirty_fin_reports.simple.config import load_project
+# and drive the pipeline with `python -m dirty_fin_reports.simple.main`.
+
+# Figure / report styling
+theme: synthwave          # viz palettes: synthwave, ghibli, valorant, cyberpunk, ...
+overlays: false           # fade per-symbol curves under the equity line? (default: no overlays)
+
+report:
+  timeframe: 5m           # kline timeframe of the underlying bar data
+  initial_balance: 1000.0 # account equity each episode starts from
+  reporting_freq: daily   # annualization cadence for Sharpe/Sortino/Calmar/UPI
+  rf_annual: 0.045        # annual risk-free rate subtracted per period
+  n_steps: 17280          # bar length of the eval episode (5m bars, ~60 days)
+  start_date: '2025-01-01' # date anchor for the equity/returns/drawdown x-axes
+  tick_tilt: true          # rotate the date-axis tick labels? (on/off)
+  tick_angle: 22.5         # rotation magnitude in degrees
+  tick_direction: down     # tilt slope direction: down | up
+  returns:
+    basis: collateral     # subgroup "By return" basis (collateral | account)
+    freq: daily
+    rf_annual: 0.045
+
+plausibility:
+  sharpe: [-5.0, 10.0]
+  sortino: [-10.0, 15.0]
+  calmar: [-5.0, 10.0]
+  cagr: [-0.99, 5.0]
+  max_drawdown: [0.0, 1.0]
+  ulcer_index: [0.0, 0.5]
+  upi: [null, 30.0]
+  win_rate: [0.0, 100.0]
+  profit_factor: [0.0, 20.0]
+  expectancy_in_risks: [null, 5.0]
+  max_leverage: [0.0, 100.0]
+  reward_delta_pct: [-50.0, 50.0]
+
+synth:
+  n_trades: 360           # target closed trades in the synthetic ledger
+  n_episodes: 8           # parallel evaluation episodes (accounts)
+  n_steps: 17280          # bar span of each episode (trades are spread across it)
+  ppo_rows: 200           # rows for training/manager_ppo.csv
+  sac_rows: 200           # rows for training/worker_sac.csv
+  seed: 42                # generator seed (used when "seeds" is not given)
+  seeds: [3, 42, 7, 101, 999]  # one run folder per seed when generating
+
+# Breakdown header/table config (mirrors the trading bot's env/reward blocks)
+env:
+  n_envs_per_symbol: 256
+  lev_min: 20.0
+  lev_max: 100.0
+  risk_min: 0.01
+  risk_max: 0.05
+  open_fee_rate: 0.0003
+  close_fee_rate: 0.0006
+  liquidation_fee_rate: 0.003
+  holding_fee_daily: 0.00015
+  bars_per_day: 288
+  initial_balance: 1000.0
+  margin_mode: isolated
+  trade_knob: 2.5
+  returns:
+    basis: collateral
+    freq: daily
+    rf_annual: 0.045

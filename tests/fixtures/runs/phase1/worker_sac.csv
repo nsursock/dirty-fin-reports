@@ -1,0 +1,6 @@
+time/fps,time/iterations,time/time_elapsed,time/total_timesteps,rollout/ep_len_mean,rollout/ep_rew_mean,rollout/success_rate,train/actor_loss,train/critic_loss,train/ent_coef,train/ent_coef_loss,train/learning_rate,train/loss,train/loss/q1,train/loss/q2,train/n_updates,train/policy/alpha,train/policy/log_pi_mean,train/value/q_mean
+2000.0,0.0,1.0,50000,96,-0.5,0.0,0.2,0.6,0.2,0.0,0.001,0.2,0.55,0.58,64,0.2,-0.3,-0.2
+2000.0,1.0,2.0,75000,96,-0.2,0.0,0.15,0.5,0.2,0.0,0.001,0.15,0.5,0.53,128,0.2,-0.25,-0.15
+2000.0,2.0,3.0,100000,128,0.1,0.0,0.1,0.4,0.2,0.0,0.001,0.1,0.45,0.5,192,0.2,-0.2,-0.1
+2000.0,3.0,4.0,125000,128,0.3,0.0,0.08,0.3,0.2,0.0,0.001,0.08,0.4,0.45,256,0.2,-0.15,-0.05
+2000.0,4.0,5.0,150000,128,0.4,0.0,0.05,0.25,0.2,0.0,0.001,0.05,0.35,0.4,320,0.2,-0.1,0.0
