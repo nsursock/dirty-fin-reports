@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run_dirs: list[Path] = []
     if run_dir is None:
-        from .synth import generate_run
+        from .synth import generate_run, synth_profile
 
         ts = f"{datetime.now():%Y%m%d-%H%M%S}"
         for seed in project.synth.seed_list:
@@ -51,14 +51,17 @@ def main(argv: list[str] | None = None) -> int:
                          sac_rows=project.synth.sac_rows,
                          seed=seed, env=project.env_params)
             run_dirs.append(rd)
+        meta = {"data_origin": "synthetic", "synthetic": synth_profile()}
     else:
         run_dirs = [run_dir]
+        meta = None
 
     from .report import run_reporter
 
     for rd in run_dirs:
         r = run_reporter(rd, out_dir=rd, config=cfg, theme=project.theme,
-                         overlays=project.overlays, plausibility=project.plausibility)
+                         overlays=project.overlays, plausibility=project.plausibility,
+                         meta=meta)
         print(f"run: {rd}")
         print(f"status: {r['plausibility']['status']} ({r['plausibility']['counts']})")
         rpctxt = "n/a" if r['performance'].get('return_pct') is None else f"{r['performance']['return_pct']:+.1f}%"

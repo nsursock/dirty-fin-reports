@@ -44,15 +44,31 @@ def test_report_has_decoupled_verdict_axes():
     assert "high-alpha" in r["recommendation"]["reason"]
 
 
+def test_report_has_validation_disclosure():
+    r = build_report(RUN)
+    assert "validation" in r["meta"]
+    assert "heuristic sanity" in r["meta"]["validation"]
+
+
+def test_run_reporter_merges_meta(tmp_path):
+    out = tmp_path / "out"
+    r = run_reporter(RUN, out_dir=out, meta={"data_origin": "synthetic"})
+    data = json.loads((out / "report.json").read_text())
+    assert data["meta"]["data_origin"] == "synthetic"
+    assert "validation" in data["meta"]
+
+
 def test_degenerate_fixture_is_flagged_implausible_not_trusted():
     r = build_report(RUN)
     p = r["plausibility"]
     assert p["status"] == "implausible"
     flagged = "\n".join(p["failed"])
-    assert "sharpe" in flagged
-    assert "upi" in flagged
-    # The report still reports the values, but refuses to call them clean.
-    assert r["portfolio"]["sharpe"] is not None
+    assert "calmar" in flagged
+    assert "cagr" in flagged
+    # Sharpe/Sortino/UPI are undefined (too few bars for a daily window), never
+    # fabricated from per-bar returns into a fake "160 Sharpe" headline.
+    assert r["portfolio"]["sharpe"] is None
+    assert r["portfolio"]["upi"] is None
 
 
 def test_long_realistic_ledger_passes_with_tuned_bounds():

@@ -84,9 +84,9 @@ def test_metrics_max_drawdown_hand_computed():
 
 def test_metrics_ulcer_and_upi_hand_computed():
     net = np.array([1000.0, 1010.0, 1020.0, 1009.8, 1030.0, 1050.0])
-    m = metrics(net, periods_per_year=252, freq="daily", rf_annual=0.0)
-    day_rets = net[1:] / net[:-1] - 1.0
-    mean = day_rets.mean()
+    m = metrics(net, periods_per_year=252, freq="bar", rf_annual=0.0)
+    bar_rets = net[1:] / net[:-1] - 1.0
+    mean = bar_rets.mean()
     peak = np.maximum.accumulate(net)
     dd = (peak - net) / peak
     ui = float(np.sqrt(np.mean(np.square(dd))))
@@ -116,6 +116,27 @@ def test_metrics_tiny_curve_defaults():
     m = metrics(np.array([1000.0]), periods_per_year=252, freq="daily")
     assert m["sharpe"] is None
     assert m["final_equity"] == 1000.0
+
+
+def test_metrics_native_cadence_is_undefined_not_inflated():
+    rng = np.random.default_rng(3)
+    e = 1000.0 * np.cumprod(1 + rng.normal(0.0001, 0.001, 500))
+    e = np.concatenate([[1000.0], e])
+    m = metrics(e, periods_per_year=72576, freq="5m", rf_annual=0.045)
+    # freq == native bar cadence: never per-bar annualized into a "160 Sharpe".
+    assert m["sharpe"] is None
+    assert m["sortino"] is None
+    assert m["upi"] is None
+    assert m["final_equity"] > 0.0
+
+
+def test_metrics_too_short_resample_is_undefined_not_inflated():
+    # Too few bars to form two daily windows: undefined, not per-bar annualized.
+    e = np.array([1000.0, 1010.0, 1020.0])
+    m = metrics(e, periods_per_year=72576, freq="daily", rf_annual=0.045)
+    assert m["sharpe"] is None
+    assert m["sortino"] is None
+    assert m["upi"] is None
 
 
 def _plateau_equity(days=60, start=1000.0, bars_per_day=288, daily_gain=0.01):

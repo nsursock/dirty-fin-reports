@@ -44,6 +44,30 @@ SAC_COLUMNS = (
     "train/value/q_mean",
 )
 
+# Design targets injected by :func:`generate_trades`: the positive expectancy
+# and low-Ulcer "healthy staircase" shape the plausibility bounds happen to be
+# tuned against. Surfaced in ``report.json`` so a "plausible" verdict reads as
+# self-consistency, not an independent economic claim.
+SYNTH_PROFILE: dict = {
+    "exit_type_mix": {"take_profit": 0.30, "stop_loss": 0.25,
+                      "market_close": 0.435, "liquidation": 0.015},
+    "gross_return_bps": {
+        "take_profit": [25.0, 70.0],
+        "stop_loss": [-65.0, -25.0],
+        "market_close": "normal(28 + regime, 60)",
+    },
+    "regime": "normal(4, 44) per episode",
+    "side_bias_long": 0.86,
+    "note": "positive expectancy + low-Ulcer staircase by construction",
+}
+
+
+def synth_profile() -> dict:
+    """The generator's induced-edge design targets (see ``SYNTH_PROFILE``)."""
+    import copy
+
+    return copy.deepcopy(SYNTH_PROFILE)
+
 
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))

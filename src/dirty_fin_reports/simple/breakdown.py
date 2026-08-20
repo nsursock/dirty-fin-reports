@@ -125,16 +125,20 @@ def breakdown_trade_stats(trades, base: float = 1000.0) -> dict:
 
 def _bd_row(label, st) -> list:
     pf_fmt = "" if st["pf"] is None else f"{st['pf']:.4f}"
-    sortino = st["sortino"]
+    sharpe = st.get("sharpe")
+    sharpe_fmt = "" if sharpe is None else f"{sharpe:.4f}"
+    sortino = st.get("sortino")
     sortino_fmt = "" if sortino is None else f"{sortino:.4f}"
+    calmar = st.get("calmar")
+    calmar_fmt = "" if calmar is None else f"{calmar:.4f}"
     ulcer = st.get("ulcer_index")
     ulcer_fmt = "" if ulcer is None else f"{ulcer:.4f}"
     upi = st.get("upi")
     upi_fmt = "" if upi is None else f"{upi:.4f}"
     return [label, st["num"], round(st["win_rate"], 2), round(st["avg_win"], 4),
-            round(st["avg_loss"], 4), round(st["net"], 4), round(st["sharpe"], 4),
+            round(st["avg_loss"], 4), round(st["net"], 4), sharpe_fmt,
             round(st["max_dd"], 2), round(st["rr"], 4), sortino_fmt,
-            round(st["calmar"], 4), pf_fmt, ulcer_fmt, upi_fmt]
+            calmar_fmt, pf_fmt, ulcer_fmt, upi_fmt]
 
 
 def _bd_table(title, groups, portfolio) -> list[str]:
@@ -336,8 +340,9 @@ def breakdown(ledger: list[dict], net, out_path: str | Path, pm: dict,
                  "Subgroup rows report descriptive trade stats only.")
     ui_str = f"{port['ulcer_index']:.4f}" if port.get("ulcer_index") is not None else "n/a"
     upi_str = f"{port['upi']:.3f}" if port.get("upi") is not None else "n/a"
+    sharpe_str = f"{port['sharpe']:.3f}" if port.get("sharpe") is not None else "n/a"
     lines.append(f"portfolio: {port['num']} trades  final_equity={float(net[-1]):.2f}  "
-                 f"ret={m.get('total_return', 0):+.2%}  sharpe={port['sharpe']:.3f}  "
+                 f"ret={m.get('total_return', 0):+.2%}  sharpe={sharpe_str}  "
                  f"max_dd={port['max_dd']:.2f}%  ulcer_index={ui_str}  upi={upi_str}")
     lines.append("")
     for title, groups in [

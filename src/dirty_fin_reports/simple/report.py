@@ -137,6 +137,13 @@ def assemble(
                                violations)
 
     report = {
+        "meta": {
+            "validation": (
+                "plausibility checks are heuristic sanity bounds on the computed "
+                "metrics; they flag statistical outliers, not economic realism or "
+                "model quality"
+            ),
+        },
         "config": {
             "timeframe": cfg.timeframe,
             "initial_balance": cfg.initial_balance,
@@ -367,19 +374,26 @@ def _json_safe(o):
 def run_reporter(src_dir: str | Path, out_dir: str | Path | None = None,
                  config: ReportConfig | None = None, theme: str = "synthwave",
                  overlays: bool = False,
-                 plausibility: Plausibility | None = None) -> dict:
+                 plausibility: Plausibility | None = None,
+                 meta: dict | None = None) -> dict:
     """CLI entry: ``src_dir`` (trading-bot run layout) → JSON, PNGs, breakdown.
 
     Figures and text go where the bot keeps them: ``breakdown.txt`` +
     ``bot-performance-<verdict>.png`` + ``trade-anatomy-<verdict>.png`` land in
     the ``testing/`` folder (flat runs use ``out_dir``), the agent diagnostics
     in ``training/``, and ``report.json`` at the run root.
+
+    ``meta`` is merged into ``report.json``'s top-level ``meta`` block (e.g.
+    the synthetic generator's induced-edge profile), so downstream readers see
+    the data's provenance next to the verdict.
     """
     src = Path(src_dir)
     out = Path(out_dir) if out_dir is not None else src
     out.mkdir(parents=True, exist_ok=True)
     r, eq, per_sym, sources, rows = _assemble_sources(src, config=config,
                                                       plausibility=plausibility)
+    if meta:
+        r.setdefault("meta", {}).update(meta)
     write_report(r, out / "report.json")
     r["artifacts"] = str(out)
 

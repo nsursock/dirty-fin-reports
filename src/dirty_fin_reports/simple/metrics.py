@@ -132,7 +132,9 @@ def metrics(
 
     ``sharpe``/``sortino``/``upi`` are ``None`` when their statistics are
     undefined (fewer than two periods, zero dispersion, no downside, zero
-    Ulcer) — undefined rather than an inflated or infinite number.
+    Ulcer) — undefined rather than an inflated or infinite number. A non-``bar``
+    ``freq`` at or coarser than the native cadence (e.g. ``5m`` on ``5m`` bars)
+    is also undefined: it is never silently annualized per-bar.
     """
     e = np.asarray(net, dtype=float)
     out: dict = {
@@ -160,15 +162,18 @@ def metrics(
 
     ppy_freq = int(periods_per_year)
     levels = e
-    window_rets = None
-    if str(freq).lower() != "bar":
+    rets = None
+    if str(freq).lower() == "bar":
+        rets = returns(e)
+    else:
         window_rets, resampled_ppy, levels = resample_returns(e, periods_per_year, freq)
         if resampled_ppy is not None:
             ppy_freq = resampled_ppy
-    if window_rets is not None:
-        rets = window_rets
-    else:
-        rets = returns(e)
+            rets = window_rets
+        # else: the cadence is at/coarser than the native bar cadence (or fewer
+        # than two full windows exist). Sharpe/Sortino/UPI are undefined here;
+        # never silently fall back to per-bar returns annualized by
+        # sqrt(periods_per_year) — that is exactly the "160 Sharpe" implosion.
 
     sharpe = sortino = upi = None
     ulcer_index = 0.0
@@ -177,7 +182,7 @@ def metrics(
         dd = (peak - levels) / np.maximum(peak, _EPS)
         ulcer_index = float(np.sqrt(np.mean(np.square(dd))))
 
-    if rets.size >= 2:
+    if rets is not None and rets.size >= 2:
         rf_period = float(rf_annual) / max(float(ppy_freq) or 1.0, 1e-12)
         excess = _excess(rets, rf_period)
         mean = float(np.mean(excess))

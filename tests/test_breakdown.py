@@ -19,6 +19,28 @@ from dirty_fin_reports.simple.ledger import coerce_ledger
 from dirty_fin_reports.simple.metrics import metrics
 
 
+def test_single_trade_stats_export():
+    import importlib
+
+    import dirty_fin_reports.simple as s
+    import dirty_fin_reports.simple.trades as tr
+
+    bd = importlib.import_module("dirty_fin_reports.simple.breakdown")
+    assert s.trade_stats is tr.trade_stats
+    assert not hasattr(bd, "trade_stats")
+    assert s.breakdown_trade_stats is bd.breakdown_trade_stats
+
+
+def test_synth_profile_shape():
+    from dirty_fin_reports.simple.synth import synth_profile
+
+    p = synth_profile()
+    assert set(p["exit_type_mix"]) == {"take_profit", "stop_loss",
+                                       "market_close", "liquidation"}
+    assert set(p["gross_return_bps"]) == {"take_profit", "stop_loss", "market_close"}
+    assert "note" in p
+
+
 @pytest.fixture(scope="module")
 def synth_run(tmp_path_factory):
     d = tmp_path_factory.mktemp("synth")
