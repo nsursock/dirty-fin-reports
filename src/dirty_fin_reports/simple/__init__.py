@@ -75,6 +75,7 @@ from .report import (
     run_reporter,
     write_report,
 )
+from .gates import format_gate_report, score_stage0_gates
 
 __all__ = [
     "EXIT_TYPES",
@@ -145,4 +146,6 @@ __all__ = [
     "report_dict",
     "run_reporter",
     "write_report",
+    "format_gate_report",
+    "score_stage0_gates",
 ]
