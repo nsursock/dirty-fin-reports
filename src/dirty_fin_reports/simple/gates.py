@@ -51,6 +51,39 @@ def _scope_values(rows: list[dict], metric: str, scope: str) -> list[float]:
     return _finite(_metric(r.get(scope), metric) for r in rows)
 
 
+def _median_scoped(
+    rows: list[dict],
+    metric: str,
+    scope: str,
+    *,
+    min_n: int = 2,
+    min_coverage: float = 0.5,
+) -> tuple[float | None, dict]:
+    """Median over a scope, with coverage guard for sparse/undefined metrics.
+
+    Used for UPI (often ``None`` when Ulcer≈0). ``total_return`` is almost
+    always defined, so coverage stays high and behavior is unchanged.
+    """
+    raw = [_metric(r.get(scope), metric) for r in rows]
+    vals = _finite(raw)
+    n_folds = len(rows)
+    n_defined = len(vals)
+    coverage = (n_defined / n_folds) if n_folds else 0.0
+    diag = {
+        "n_folds": n_folds,
+        "n_defined": n_defined,
+        "n_missing": n_folds - n_defined,
+        "coverage": coverage,
+        "min_n": int(min_n),
+        "min_coverage": float(min_coverage),
+    }
+    # Only enforce coverage for metrics that are frequently undefined.
+    if str(metric).lower() == "upi":
+        if n_defined < int(min_n) or coverage < float(min_coverage):
+            return None, diag
+    return _median(vals), diag
+
+
 def _median(vals: list[float]) -> float | None:
     if not vals:
         return None
@@ -99,12 +132,26 @@ def _seeds_fraction_positive(rows: list[dict], metric: str, scope: str) -> float
     return float(positives / n)
 
 
-def _median_retention(rows: list[dict], metric: str) -> float | None:
+def _median_retention(
+    rows: list[dict],
+    metric: str,
+    *,
+    min_pairs: int = 2,
+    min_coverage: float = 0.5,
+) -> tuple[float | None, dict]:
+    """Median OOS/IS retention with coverage guard.
+
+    UPI (and similar ratios) are often ``None`` when Ulcer is ~0 (monotone
+    equity). Median over the *few* defined folds silently overstates or
+    understates retention. Require enough defined pairs or return ``None``.
+    """
     ratios: list[float] = []
+    n_missing = 0
     for r in rows:
         is_v = _metric(r.get("is"), metric)
         oos_v = _metric(r.get("oos"), metric)
         if is_v is None or oos_v is None:
+            n_missing += 1
             continue
         if is_v > 0.0:
             ratios.append(oos_v / is_v)
@@ -113,7 +160,20 @@ def _median_retention(rows: list[dict], metric: str) -> float | None:
             ratios.append(1.0)
         else:
             ratios.append(0.0)
-    return _median(ratios)
+    n_folds = len(rows)
+    n_pairs = len(ratios)
+    coverage = (n_pairs / n_folds) if n_folds else 0.0
+    diag = {
+        "n_folds": n_folds,
+        "n_pairs": n_pairs,
+        "n_missing": n_missing,
+        "coverage": coverage,
+        "min_pairs": int(min_pairs),
+        "min_coverage": float(min_coverage),
+    }
+    if n_pairs < int(min_pairs) or coverage < float(min_coverage):
+        return None, diag
+    return _median(ratios), diag
 
 
 def _eval_gate(name: str, spec: dict, rows: list[dict]) -> dict:
@@ -126,20 +186,23 @@ def _eval_gate(name: str, spec: dict, rows: list[dict]) -> dict:
         raise ValueError(f"unsupported gate op {op!r} for {name}")
 
     if aggregate == "median":
-        value = _median(_scope_values(rows, metric, scope))
+        value, extra = _median_scoped(rows, metric, scope)
     elif aggregate == "fraction_positive":
         value = _fraction_positive(_scope_values(rows, metric, scope))
+        extra = {}
     elif aggregate == "seeds_fraction_positive":
         value = _seeds_fraction_positive(rows, metric, scope)
+        extra = {}
     elif aggregate == "median_retention":
-        value = _median_retention(rows, metric)
+        value, extra = _median_retention(rows, metric)
     elif aggregate == "max_abs_share":
         value = _max_abs_share(_scope_values(rows, metric, scope))
+        extra = {}
     else:
         raise ValueError(f"unsupported aggregate {aggregate!r} for {name}")
 
     passed = False if value is None else bool(_OPS[op](value, threshold))
-    return {
+    out = {
         "name": name,
         "metric": metric,
         "scope": scope,
@@ -149,6 +212,8 @@ def _eval_gate(name: str, spec: dict, rows: list[dict]) -> dict:
         "value": value,
         "pass": passed,
     }
+    out.update(extra)
+    return out
 
 
 def score_stage0_gates(fold_results: list[dict], gates: dict) -> dict:

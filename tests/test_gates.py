@@ -101,3 +101,54 @@ def test_dominance_gate_catches_single_fold():
     scored = score_stage0_gates(rows, GATES)
     assert scored["gates"]["no_single_fold_dominance"]["pass"] is False
     assert scored["gates"]["no_single_fold_dominance"]["value"] > 0.50
+
+
+def test_retention_undefined_when_upi_coverage_too_low():
+    """Monotone equity → UPI=None; one defined pair must not drive the gate."""
+    rows = [
+        _row(1, 0, 0.20, None, 0.10, None),
+        _row(1, 1, 0.18, None, 0.09, None),
+        _row(1, 2, 0.22, 5942.0, 0.11, 1585.0),  # only defined pair
+        _row(2, 0, 0.15, None, 0.08, None),
+        _row(2, 1, 0.16, None, 0.07, None),
+        _row(2, 2, 0.14, None, 0.06, None),
+    ]
+    scored = score_stage0_gates(rows, GATES)
+    g = scored["gates"]["oos_retention_vs_is"]
+    assert g["value"] is None
+    assert g["pass"] is False
+    assert g["n_pairs"] == 1
+    assert g["coverage"] < 0.5
+
+
+def test_retention_uses_median_when_coverage_ok():
+    rows = [
+        _row(1, 0, 0.20, 2.0, 0.12, 1.2),  # 0.60
+        _row(1, 1, 0.18, 1.8, 0.10, 1.0),  # 0.556
+        _row(1, 2, 0.22, 2.2, 0.11, 1.1),  # 0.50
+        _row(2, 0, 0.15, 1.5, 0.09, 0.9),  # 0.60
+        _row(2, 1, 0.16, 1.6, 0.08, 0.8),  # 0.50
+        _row(2, 2, 0.14, 1.4, 0.07, 0.7),  # 0.50
+    ]
+    scored = score_stage0_gates(rows, GATES)
+    g = scored["gates"]["oos_retention_vs_is"]
+    assert g["n_pairs"] == 6
+    assert g["pass"] is True
+    assert g["value"] >= 0.50
+
+
+def test_oos_upi_positive_undefined_when_coverage_too_low():
+    rows = [
+        _row(1, 0, 0.20, None, 0.10, None),
+        _row(1, 1, 0.18, None, 0.09, None),
+        _row(1, 2, 0.22, None, 0.11, 1585.0),  # only defined OOS UPI
+        _row(2, 0, 0.15, None, 0.08, None),
+        _row(2, 1, 0.16, None, 0.07, None),
+        _row(2, 2, 0.14, None, 0.06, None),
+    ]
+    scored = score_stage0_gates(rows, GATES)
+    g = scored["gates"]["oos_upi_positive"]
+    assert g["value"] is None
+    assert g["pass"] is False
+    assert g["n_defined"] == 1
+    assert g["coverage"] < 0.5
