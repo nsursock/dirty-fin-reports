@@ -9,7 +9,10 @@ per-bar "160 Sharpe".
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +28,86 @@ from .trades import by_episode, by_exit, by_side, by_symbol, hold_stats, leverag
 from .training import detect_algorithm, load_training_csv, series, training_health
 
 _default_names = ("trades.csv", "manager_ppo.csv", "worker_sac.csv")
+_MTM_GAP_WARN_PCT = 5.0
+
+
+def _package_version() -> str:
+    try:
+        from dirty_fin_reports import __version__
+        return str(__version__)
+    except Exception:
+        return "unknown"
+
+
+def _git_commit() -> dict:
+    """Best-effort git provenance for the installed / checkout tree."""
+    out = {"commit": None, "dirty": None}
+    try:
+        root = Path(__file__).resolve().parents[3]
+        commit = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        dirty = subprocess.call(
+            ["git", "-C", str(root), "diff", "--quiet"],
+            stderr=subprocess.DEVNULL,
+        ) != 0
+        out["commit"] = commit
+        out["dirty"] = dirty
+    except Exception:
+        pass
+    return out
+
+
+def _config_hash(cfg: ReportConfig) -> str:
+    payload = {
+        "timeframe": cfg.timeframe,
+        "initial_balance": cfg.initial_balance,
+        "reporting_freq": cfg.reporting_freq,
+        "rf_annual": cfg.rf_annual,
+        "n_steps": cfg.n_steps,
+        "start_date": cfg.start_date,
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _mean_or_none(vals: list) -> float | None:
+    clean = [float(v) for v in vals if v is not None and np.isfinite(v)]
+    if not clean:
+        return None
+    return float(np.mean(clean))
+
+
+def _aggregate_episode_metrics(ep_metrics: list[dict], cfg: ReportConfig) -> dict:
+    """Headline portfolio metrics from per-episode curves (Ref #5).
+
+    Returns / Sharpe / Sortino / UPI / CAGR are means across episodes.
+    Drawdown and Ulcer use the **worst** episode (max risk). Dollar facts use
+    the mean final equity so they stay comparable to the mean display curve.
+    """
+    if not ep_metrics:
+        return metrics(np.array([]), periods_per_year=cfg.periods_per_year,
+                       freq=cfg.reporting_freq, rf_annual=cfg.rf_annual)
+    max_dds = [m.get("max_drawdown", 0.0) for m in ep_metrics]
+    ulcers = [m.get("ulcer_index", 0.0) for m in ep_metrics]
+    out = {
+        "final_equity": _mean_or_none([m.get("final_equity") for m in ep_metrics]) or 0.0,
+        "total_return": _mean_or_none([m.get("total_return") for m in ep_metrics]) or 0.0,
+        "max_drawdown": float(max(max_dds)) if max_dds else 0.0,
+        "cagr": _mean_or_none([m.get("cagr") for m in ep_metrics]) or 0.0,
+        "sharpe": _mean_or_none([m.get("sharpe") for m in ep_metrics]),
+        "sortino": _mean_or_none([m.get("sortino") for m in ep_metrics]),
+        "ulcer_index": float(max(ulcers)) if ulcers else 0.0,
+        "upi": _mean_or_none([m.get("upi") for m in ep_metrics]),
+        "return_basis": "account_mtm_per_episode",
+        "freq": str(cfg.reporting_freq),
+        "rf_annual": float(cfg.rf_annual),
+        "periods_per_year": int(cfg.periods_per_year),
+        "aggregation": "mean_return_worst_drawdown",
+        "n_episodes": len(ep_metrics),
+    }
+    return out
 
 
 def _first_existing(cands) -> Optional[Path]:
@@ -71,6 +154,7 @@ def assemble(
     config: ReportConfig | None = None,
     ma: int = 10,
     plausibility: Plausibility | None = None,
+    env=None,
 ) -> tuple[dict, dict, tuple, list]:
     """Compute the whole report bundle plus its curves in a single pass.
 
@@ -80,31 +164,52 @@ def assemble(
     here. Renderers (``figures``, ``breakdown``) consume the returned bundle
     instead of recomputing from raw inputs.
 
+    Headline risk ratios are aggregated from **per-episode MTM** curves
+    (Refs #4/#5). The mean realized/MTM curves remain available for display.
+
     Returns ``(report, eq, (symbols, per_symbol_curves), rows)``.
     """
     cfg = config or ReportConfig()
     rows = coerce_ledger(ledger_rows)
-    warnings = validate(rows)
+    warnings = validate(rows, env=env)
     if not rows:
         raise ValueError("ledger has no trades to report")
 
     eq = portfolio_curve(rows, start=cfg.initial_balance, n_steps=cfg.n_steps)
     per_sym = per_symbol_curves(rows, start=cfg.initial_balance, n_steps=cfg.n_steps)
-    m = metrics(eq["net"], periods_per_year=cfg.periods_per_year,
-                freq=cfg.reporting_freq, rf_annual=cfg.rf_annual)
+
+    ep_metrics = []
+    ep_metric_map = {}
+    for ep, books in sorted(eq["per_episode"].items()):
+        curve = books["mtm"][1:] if books["mtm"].size > 1 else books["mtm"]
+        em = metrics(curve, periods_per_year=cfg.periods_per_year,
+                     freq=cfg.reporting_freq, rf_annual=cfg.rf_annual)
+        ep_metrics.append(em)
+        ep_metric_map[str(ep)] = em
+    m = _aggregate_episode_metrics(ep_metrics, cfg)
+    mtm_last = float(eq["mtm"][-1]) if eq["mtm"].size else cfg.initial_balance
+    mtm_first = float(eq["mtm"][0]) if eq["mtm"].size else cfg.initial_balance
     net_last = float(eq["net"][-1]) if eq["net"].size else cfg.initial_balance
     net_first = float(eq["net"][0]) if eq["net"].size else cfg.initial_balance
-    total_return_eq = net_last / max(net_first, 1e-12) - 1.0
+    total_return_eq = mtm_last / max(mtm_first, 1e-12) - 1.0
     m["total_return_equation"] = total_return_eq
+    m["equity_basis"] = "mtm"
 
     n_episodes = eq.get("n_episodes", 1)
-    ts = trade_stats(rows, base=cfg.initial_balance, n_accounts=n_episodes)
+    ts = trade_stats(rows, base=cfg.initial_balance, n_accounts=1)
     leverage = leverage_stats(rows)
     calmar = (
         m["cagr"] / m["max_drawdown"]
         if "cagr" in m and m["max_drawdown"] > 1e-12 else 0.0
     )
     m["calmar"] = calmar
+
+    gap_pct = float(eq.get("mtm_gap_max_pct") or 0.0)
+    if gap_pct >= _MTM_GAP_WARN_PCT:
+        warnings.append(
+            f"mtm vs realized equity gap reached {gap_pct:.1f}% "
+            f"(threshold {_MTM_GAP_WARN_PCT:.0f}%)"
+        )
 
     agents = {}
     plausibility_inputs: dict[str, float] = {
@@ -132,10 +237,19 @@ def assemble(
     verdict = aggregate(checks)
     violations = [c.metric for c in checks if not c.ok]
     perf = performance_axis(m.get("total_return"))
-    health = health_axis(eq["net"])
+    # Health on the worst-episode MTM path (same risk lens as headline DD).
+    health_curve = eq["mtm"]
+    if eq["per_episode"]:
+        worst_ep = max(
+            eq["per_episode"].items(),
+            key=lambda kv: float(ep_metric_map.get(str(kv[0]), {}).get("max_drawdown") or 0.0),
+        )[1]
+        health_curve = worst_ep["mtm"][1:] if worst_ep["mtm"].size > 1 else worst_ep["mtm"]
+    health = health_axis(health_curve)
     recommendation = recommend(perf["status"], verdict["status"], health["status"],
                                violations)
 
+    git = _git_commit()
     report = {
         "meta": {
             "validation": (
@@ -143,6 +257,23 @@ def assemble(
                 "metrics; they flag statistical outliers, not economic realism or "
                 "model quality"
             ),
+            "reproducibility": {
+                "package_version": _package_version(),
+                "git_commit": git.get("commit"),
+                "git_dirty": git.get("dirty"),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "config_hash": _config_hash(cfg),
+                "methodology": {
+                    "ddof": 0,
+                    "rf_annual": float(cfg.rf_annual),
+                    "reporting_freq": cfg.reporting_freq,
+                    "periods_per_year": int(cfg.periods_per_year),
+                    "equity_basis": "mtm",
+                    "cagr_time_basis": "bars/periods_per_year",
+                    "portfolio_aggregation": "mean_return_worst_drawdown",
+                    "drawdown_aggregation": "worst_per_episode",
+                },
+            },
         },
         "config": {
             "timeframe": cfg.timeframe,
@@ -166,18 +297,27 @@ def assemble(
             "length": eq["length"],
             "net_first": net_first,
             "net_last": net_last,
-            "down_last_pct": float(_down_perc(net_first, net_last)),
+            "mtm_first": mtm_first,
+            "mtm_last": mtm_last,
+            "down_last_pct": float(_down_perc(mtm_first, mtm_last)),
+            "basis": "mtm",
+            "mtm_gap_max_pct": gap_pct,
+            "mean_curve_note": (
+                "net/mtm portfolio series are the mean of per-episode books "
+                "(display only; risk ratios use per-episode aggregation)"
+            ),
         },
         "trades": {
             "stats": ts,
-            "by_symbol": by_symbol(rows, base=cfg.initial_balance, n_accounts=n_episodes),
-            "by_exit": by_exit(rows, base=cfg.initial_balance, n_accounts=n_episodes),
-            "by_side": by_side(rows, base=cfg.initial_balance, n_accounts=n_episodes),
-            "by_episode": by_episode(rows, base=cfg.initial_balance, n_accounts=n_episodes),
+            "by_symbol": by_symbol(rows, base=cfg.initial_balance, n_accounts=1),
+            "by_exit": by_exit(rows, base=cfg.initial_balance, n_accounts=1),
+            "by_side": by_side(rows, base=cfg.initial_balance, n_accounts=1),
+            "by_episode": by_episode(rows, base=cfg.initial_balance, n_accounts=1),
             "hold": hold_stats(rows, bar_minutes=_bar_minutes(cfg.timeframe)),
             "leverage": leverage,
         },
         "portfolio": m,
+        "portfolio_by_episode": ep_metric_map,
         "performance": perf,
         "health": health,
         "recommendation": recommendation,
@@ -288,7 +428,7 @@ def format_breakdown(r: dict) -> str:
     lines.append(f"trades: {t['num']}  net_pnl={t['net_pnl']:+.2f}  win_rate={t['win_rate']:.2f}%  "
                  f"pf={_fmt(t['profit_factor'])}  expectancy={t['expectancy']:+.4f}  "
                  f"expectancy_R={_fmt(t['expectancy_in_risks'])}")
-    lines.append(f"portfolio: equity={r['equity']['net_last']:,.2f}  "
+    lines.append(f"portfolio: equity={r['equity'].get('mtm_last', r['equity']['net_last']):,.2f}  "
                  f"ret={m['total_return']:+.2%}  sharpe={_fmt(m['sharpe'])}  "
                  f"sortino={_fmt(m['sortino'])}  max_dd={m['max_drawdown']:.2%}  "
                  f"ulcer={m['ulcer_index']:.4f}  upi={_fmt(m['upi'])}  calmar={_fmt(m['calmar'])}  cagr={m['cagr']:+.2%}")
@@ -416,14 +556,16 @@ def run_reporter(src_dir: str | Path, out_dir: str | Path | None = None,
         (int(t.get("closed_at", 0) or 0) for t in rows), default=0
     ) if (cfg.n_steps is None or cfg.n_steps <= 0) else cfg.n_steps
     bd_cfg = bot_cfg(timeframe=cfg.timeframe, initial_balance=cfg.initial_balance,
-                     n_steps=inferred_steps)
-    breakdown(rows, eq["net"], testing_dir / "breakdown.txt", r["portfolio"],
+                     n_steps=inferred_steps, rf_annual=cfg.rf_annual,
+                     reporting_freq=cfg.reporting_freq)
+    primary = eq["mtm"] if eq.get("mtm") is not None and getattr(eq["mtm"], "size", 0) else eq["net"]
+    breakdown(rows, primary, testing_dir / "breakdown.txt", r["portfolio"],
               cfg=bd_cfg)
 
     per_sym_arg = per_sym if overlays else None
     status = r["plausibility"]["status"]
     bounds = (plausibility or Plausibility()).as_dict()
-    figure1(eq["net"], eq["gross"], eq["steps"], rows,
+    figure1(primary, eq["gross"], eq["steps"], rows,
             testing_dir / f"bot-performance-{status}.png",
             r["portfolio"], r["trades"]["stats"],
             per_symbol=per_sym_arg, theme=theme, verdict=status,

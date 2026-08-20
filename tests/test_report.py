@@ -50,12 +50,43 @@ def test_report_has_validation_disclosure():
     assert "heuristic sanity" in r["meta"]["validation"]
 
 
+def test_report_has_reproducibility_metadata():
+    r = build_report(RUN)
+    meta = r["meta"]["reproducibility"]
+    assert "package_version" in meta
+    assert "config_hash" in meta
+    assert meta["methodology"]["rf_annual"] == 0.045
+    assert meta["methodology"]["equity_basis"] == "mtm"
+    assert meta["methodology"]["ddof"] == 0
+    assert r["portfolio"]["rf_annual"] == 0.045
+    assert r["portfolio"]["equity_basis"] == "mtm"
+    assert "portfolio_by_episode" in r
+
+
+def test_report_rf_annual_is_threaded_consistently():
+    rows = _long_ledger()
+    cfg0 = ReportConfig(timeframe="5m", initial_balance=1000.0,
+                        reporting_freq="daily", rf_annual=0.0)
+    cfg6 = ReportConfig(timeframe="5m", initial_balance=1000.0,
+                        reporting_freq="daily", rf_annual=0.06)
+    bounds = Plausibility(sharpe=(None, 12.0), sortino=(None, 30.0),
+                          upi=(None, 300.0), calmar=(None, 120.0))
+    r0 = report_dict(rows, config=cfg0, plausibility=bounds)
+    r6 = report_dict(rows, config=cfg6, plausibility=bounds)
+    assert r0["portfolio"]["rf_annual"] == 0.0
+    assert r6["portfolio"]["rf_annual"] == 0.06
+    assert r0["config"]["rf_annual"] == 0.0
+    assert r6["config"]["rf_annual"] == 0.06
+    assert r0["portfolio"]["sharpe"] != r6["portfolio"]["sharpe"]
+
+
 def test_run_reporter_merges_meta(tmp_path):
     out = tmp_path / "out"
     r = run_reporter(RUN, out_dir=out, meta={"data_origin": "synthetic"})
     data = json.loads((out / "report.json").read_text())
     assert data["meta"]["data_origin"] == "synthetic"
     assert "validation" in data["meta"]
+    assert "reproducibility" in data["meta"]
 
 
 def test_degenerate_fixture_is_flagged_implausible_not_trusted():
@@ -85,7 +116,7 @@ def test_long_realistic_ledger_passes_with_tuned_bounds():
     assert r["portfolio"]["max_drawdown"] <= 1.0
 
 
-def test_report_headline_is_always_the_daily_cadence():
+def test_report_headline_uses_per_episode_mtm_aggregation():
     rows = _long_ledger()
     from dirty_fin_reports.simple.metrics import metrics
     from dirty_fin_reports.simple.equity import portfolio_curve
@@ -95,9 +126,11 @@ def test_report_headline_is_always_the_daily_cadence():
                     plausibility=Plausibility(sharpe=(None, 12.0), sortino=(None, 30.0),
                                               upi=(None, 300.0), calmar=(None, 120.0)))
     eq = portfolio_curve(rows, start=1000.0)
-    daily = metrics(eq["net"], periods_per_year=72576, freq="daily", rf_annual=0.045)
-    assert r["portfolio"]["sharpe"] == daily["sharpe"]
+    ep0 = metrics(eq["per_episode"][0]["mtm"][1:], periods_per_year=72576,
+                  freq="daily", rf_annual=0.045)
+    assert r["portfolio"]["max_drawdown"] == pytest.approx(ep0["max_drawdown"])
     assert r["config"]["reporting_freq"] == "daily"
+    assert r["portfolio"]["equity_basis"] == "mtm"
 
 
 def test_report_dict_plus_agents_plausibility_inputs():

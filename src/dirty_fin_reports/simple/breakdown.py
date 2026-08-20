@@ -28,6 +28,8 @@ def bot_cfg(
     initial_balance: float = 1000.0,
     n_steps: int = 5760,
     returns_basis: str = "collateral",
+    rf_annual: float = 0.045,
+    reporting_freq: str = "daily",
     env: TradingEnvParams | None = None,
     **overrides,
 ) -> dict:
@@ -36,6 +38,8 @@ def bot_cfg(
     The ``env`` block comes from :class:`TradingEnvParams` (the single source
     shared with the synthetic generator); ``overrides`` may still replace it.
     Any top-level key in ``overrides`` is merged in (e.g. ``env``, ``data``).
+    ``rf_annual`` / ``reporting_freq`` must match :class:`ReportConfig` so the
+    breakdown header cannot drift from ``report.json`` (Ref #8).
     """
     env_params = (env or TradingEnvParams()).as_dict()
     env_params["initial_balance"] = initial_balance
@@ -48,7 +52,11 @@ def bot_cfg(
         "hrl": {"goal_every": 6, "goal_dim": 3},
         "manager": {"n_steps": 256},
         "worker": {"net_arch": [256, 256], "learning_rate": 0.001},
-        "returns": {"basis": returns_basis, "freq": "daily", "rf_annual": 0.045},
+        "returns": {
+            "basis": returns_basis,
+            "freq": reporting_freq,
+            "rf_annual": float(rf_annual),
+        },
         "eval": {"episodes": 8, "max_positions_per_symbol": 1, "deterministic": True},
     }
     for key, val in overrides.items():
@@ -87,40 +95,31 @@ def _config_lines(cfg) -> list[str]:
 def breakdown_trade_stats(trades, base: float = 1000.0) -> dict:
     """Descriptive per-trade stats (mirrors the trading-bot engine).
 
-    ``max_dd`` is the peak-to-trough drawdown of the trade-PnL cumsum scaled
-    by the total account capital in play (``n_accounts * base``); Sharpe /
-    Sortino (mean/std, mean/downside-std) and Calmar are per-trade, NOT
+    ``max_dd`` is the **worst per-episode** peak-to-trough of the trade-PnL
+    cumsum scaled by one account ``base`` (parallel episodes are not
+    serialized — Ref #5). Sharpe / Sortino / Calmar are per-trade, NOT
     annualized. ``pf`` is ``None`` when every trade wins.
     """
-    pnls = np.array([float(t.get("realized_pnl", 0.0) or 0.0) for t in trades], dtype=float)
-    n = int(pnls.size)
-    if n == 0:
-        return dict(num=0, win_rate=0.0, avg_win=0.0, avg_loss=0.0, net=0.0,
-                    sharpe=0.0, max_dd=0.0, rr=0.0, sortino=0.0, calmar=0.0, pf=0.0)
-    wins, losses = pnls[pnls > 0], pnls[pnls < 0]
-    net = float(pnls.sum())
-    win_rate = 100.0 * float((pnls > 0).mean())
-    avg_win = float(wins.mean()) if wins.size else 0.0
-    avg_loss = float(losses.mean()) if losses.size else 0.0
-    accts = {(int(t.get("episode", 0) or 0), str(t.get("symbol", ""))) for t in trades}
-    n_accts = max(len(accts), 1)
-    cum = np.cumsum(pnls)
-    peak = np.maximum.accumulate(cum)
-    dd_min = float((cum - peak).min())
-    max_dd = 100.0 * abs(dd_min) / max(abs(base) * n_accts, 1.0) if abs(dd_min) > 1e-9 else 0.0
-    rr = avg_win / abs(avg_loss) if losses.size and abs(avg_loss) > 1e-12 else 0.0
-    gw = float(wins.sum()) if wins.size else 0.0
-    gl = float(abs(losses.sum())) if losses.size else 0.0
-    pf = (gw / gl) if gl > 1e-12 else (None if gw > 0 else 0.0)
-    std = float(pnls.std())
-    sharpe = float(pnls.mean()) / std if n > 1 and std > 1e-12 else 0.0
-    dstd = float(losses.std()) if losses.size > 1 else 0.0
-    sortino = float(pnls.mean()) / dstd if dstd > 1e-12 else 0.0
-    total_ret = net / max(abs(base) * n_accts, 1.0)
+    from .trades import trade_stats
+
+    st = trade_stats(trades, base=base, n_accounts=1)
+    max_dd = float(st["max_dd_pct"])
+    net = float(st["net_pnl"])
+    total_ret = net / max(abs(base), 1.0)
     calmar = total_ret / (max_dd / 100.0) if max_dd > 1e-9 else 0.0
-    return dict(num=n, win_rate=win_rate, avg_win=avg_win, avg_loss=avg_loss,
-                net=net, sharpe=sharpe, max_dd=max_dd, rr=rr, sortino=sortino,
-                calmar=calmar, pf=pf)
+    return dict(
+        num=st["num"],
+        win_rate=st["win_rate"],
+        avg_win=st["avg_win"],
+        avg_loss=st["avg_loss"],
+        net=net,
+        sharpe=0.0 if st["sharpe_per_trade"] is None else st["sharpe_per_trade"],
+        max_dd=max_dd,
+        rr=st["risk_reward"],
+        sortino=0.0 if st["sortino_per_trade"] is None else st["sortino_per_trade"],
+        calmar=calmar,
+        pf=st["profit_factor"] if st["profit_factor"] is not None else (None if st["num"] and st["win_rate"] == 100.0 else 0.0),
+    )
 
 
 def _bd_row(label, st) -> list:
@@ -368,6 +367,25 @@ def breakdown(ledger: list[dict], net, out_path: str | Path, pm: dict,
     lines.append("Baselines (after fees/funding/slip)")
     lines.append(f"  policy: {float(net[0]):.2f} -> {float(net[-1]):.2f}  ({m.get('total_return', 0):+.3f})")
     lines.append("  flat: 1000.00 -> 1000.00  (+0.000)")
+    lines.append("")
+    lines.append("NOTES")
+    lines.append("-----")
+    lines.append(
+        "WARNING: An empty cell means the metric is undefined or not computed for "
+        "that row — it is not zero. Zero would print as 0.0000."
+    )
+    lines.append(
+        "  - ulcer index / upi: filled only on the portfolio row (equity-curve "
+        "metrics). Subgroup rows (symbol, episode, exit, …) intentionally leave "
+        "these blank because they are not time-series portfolio measures."
+    )
+    lines.append(
+        "  - profit factor: blank when there are no losing trades (ratio undefined)."
+    )
+    lines.append(
+        "  - sharpe / sortino: blank when dispersion or sample size is insufficient "
+        "to define the ratio."
+    )
     text = "\n".join(lines)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)

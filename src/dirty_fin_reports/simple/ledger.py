@@ -50,6 +50,10 @@ NUMERIC_COLUMNS: tuple[str, ...] = (
 EXIT_TYPES: tuple[str, ...] = ("market_close", "take_profit", "stop_loss", "liquidation")
 SIDES: tuple[str, ...] = ("long", "short")
 
+# Relative / absolute tolerances for accounting identities.
+_REL_TOL = 0.05
+_ABS_TOL = 1e-6
+
 
 def _maybe_float(v) -> float | None:
     if v is None:
@@ -108,10 +112,30 @@ def coerce_ledger(rows: Iterable[dict]) -> list[dict]:
     return out
 
 
-def validate(rows: Iterable[dict]) -> list[str]:
-    """Return a list of descriptive warnings about data-quality problems."""
+def _close(a: float, b: float, *, rel: float = _REL_TOL, abs_tol: float = _ABS_TOL) -> bool:
+    return abs(a - b) <= max(abs_tol, rel * max(abs(a), abs(b), 1e-12))
+
+
+def validate(rows: Iterable[dict], env=None, *, fee_tol: float = _REL_TOL) -> list[str]:
+    """Return descriptive warnings about data-quality and accounting problems.
+
+    When ``env`` (a :class:`~.env_params.TradingEnvParams` or dict with fee /
+    leverage fields) is provided, fee and notional identities are checked
+    against those rates. Liquidation and price-PnL identities are always
+    checked when the required fields are present.
+    """
+    open_fee = close_fee = None
+    if env is not None:
+        if hasattr(env, "open_fee_rate"):
+            open_fee = float(env.open_fee_rate)
+            close_fee = float(env.close_fee_rate)
+        elif isinstance(env, dict):
+            open_fee = float(env.get("open_fee_rate", 0.0) or 0.0)
+            close_fee = float(env.get("close_fee_rate", 0.0) or 0.0)
+
     warnings: list[str] = []
-    for i, r in enumerate(rows):
+    rows_list = list(rows)
+    for i, r in enumerate(rows_list):
         tag = f"row {i} (ep{int(r.get('episode', 0) or 0)}/{r.get('trade_id', '?')})"
         if r.get("side") not in SIDES:
             warnings.append(f"{tag}: unexpected side {r.get('side')!r}")
@@ -129,8 +153,39 @@ def validate(rows: Iterable[dict]) -> list[str]:
         if r.get("entry_price") is not None and r.get("entry_price", 0) <= 0:
             warnings.append(f"{tag}: non-positive entry price")
         pnl, coll = r.get("realized_pnl"), r.get("collateral")
-        if pnl is not None and coll is not None and float(pnl) < -float(coll):
+        if pnl is not None and coll is not None and float(pnl) < -float(coll) - _ABS_TOL:
             warnings.append(f"{tag}: pnl below -100% of collateral ({pnl} < {-coll})")
+
+        # --- accounting identities ---
+        if (
+            r.get("notional") is not None
+            and r.get("collateral") is not None
+            and r.get("leverage") is not None
+            and float(r["collateral"]) > 0
+            and float(r["leverage"]) > 0
+        ):
+            expected_notional = float(r["collateral"]) * float(r["leverage"])
+            if not _close(float(r["notional"]), expected_notional, rel=fee_tol):
+                warnings.append(
+                    f"{tag}: notional≠collateral*leverage "
+                    f"({r['notional']} vs {expected_notional:.6g})"
+                )
+
+        if r.get("exit_type") == "liquidation" and pnl is not None and coll is not None:
+            if not _close(float(pnl), -float(coll), rel=fee_tol, abs_tol=max(_ABS_TOL, 0.01)):
+                warnings.append(
+                    f"{tag}: liquidation pnl≠-collateral ({pnl} vs {-float(coll)})"
+                )
+
+        if open_fee is not None and close_fee is not None and r.get("notional") is not None:
+            expected_fee = float(r["notional"]) * (open_fee + close_fee)
+            fee = float(r.get("fee") or 0.0)
+            # Liquidations often charge a different fee; skip strict fee identity there.
+            if r.get("exit_type") != "liquidation" and not _close(fee, expected_fee, rel=fee_tol):
+                warnings.append(
+                    f"{tag}: fee≠notional*(open+close) ({fee} vs {expected_fee:.6g})"
+                )
+
     return warnings
 
 

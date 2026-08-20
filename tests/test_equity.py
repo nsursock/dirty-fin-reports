@@ -36,6 +36,8 @@ def test_portfolio_curve_hand_computed(_rows=_rows):
     assert eq["steps"].tolist() == list(range(1, 51))
     assert eq["net"][-1] == 1050.0
     assert eq["net"][0] == 1000.0
+    assert eq["mtm"][-1] == pytest.approx(1050.0)
+    assert "mtm" in eq["per_episode"][0]
 
     # Per-episode single-account books.
     assert eq["per_episode"][0]["net"][-1] == 1083.0
@@ -53,6 +55,26 @@ def test_portfolio_curve_hand_computed(_rows=_rows):
     # Net only steps on trade closes: bar 9 still at start balance.
     assert eq["net"][8] == 1000.0
     assert eq["per_episode"][0]["net"][14] == 1090.0
+
+
+def test_mtm_moves_while_position_open():
+    """Open MTM must show underwater risk before the close bar (Ref #4)."""
+    rows = coerce_ledger([{
+        "trade_id": "1", "episode": 0, "symbol": "BTC", "side": "long",
+        "opened_at": 1, "closed_at": 11, "entry_price": 100.0, "exit_price": 90.0,
+        "notional": 1000.0, "leverage": 5.0, "collateral": 200.0,
+        "entry_conviction": 1.0, "fee": 0.0, "funding": 0.0,
+        "realized_pnl": -100.0, "exit_type": "stop_loss",
+    }])
+    eq = portfolio_curve(rows, start=1000.0, n_steps=11)
+    # Realized stays flat until close.
+    assert eq["net"][4] == 1000.0
+    assert eq["net"][-1] == 900.0
+    # Mid-hold MTM (bar 6 → index 5) is halfway to the -100 realized loss.
+    assert eq["mtm"][5] < 1000.0
+    assert eq["mtm"][5] == pytest.approx(950.0)
+    assert eq["mtm"][-1] == pytest.approx(900.0)
+    assert eq["mtm_gap_max_pct"] > 0.0
 
 
 def test_gross_readds_fees_and_funding(_rows=_rows):

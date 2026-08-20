@@ -156,6 +156,9 @@ def test_breakdown_writes_bot_like_lines(tmp_path, synth_run):
     assert any(l.startswith("env: 8 symbols x 1 = 8 test envs") for l in body)
     assert any(l.startswith("portfolio: ") for l in body)
     assert any(l.strip().startswith("flat: 1000.00 -> 1000.00") for l in body)
+    assert "NOTES" in body
+    assert any("empty cell means the metric is undefined" in l for l in body)
+    assert any("ulcer index / upi" in l for l in body)
     # portfolio row is the last row of the symbol table and carries risk ratios
     sym_table = text.split("By symbol", 1)[1].split("By episode", 1)[0]
     assert "| portfolio" in sym_table

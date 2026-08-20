@@ -68,6 +68,43 @@ def test_validate_fixture_no_warnings(trades_rows):
     assert validate(trades_rows) == []
 
 
+def test_validate_liquidation_and_notional_identities():
+    ok = coerce_ledger([{
+        "trade_id": "1", "episode": "0", "symbol": "BTC", "side": "long",
+        "opened_at": "1", "closed_at": "5", "entry_price": "100",
+        "exit_price": "80", "notional": "1000", "leverage": "5",
+        "collateral": "200", "entry_conviction": "0.5", "fee": "0",
+        "funding": "0", "realized_pnl": "-200", "exit_type": "liquidation",
+    }])
+    assert validate(ok) == []
+
+    bad = coerce_ledger([{
+        "trade_id": "2", "episode": "0", "symbol": "BTC", "side": "long",
+        "opened_at": "1", "closed_at": "5", "entry_price": "100",
+        "exit_price": "80", "notional": "1000", "leverage": "5",
+        "collateral": "200", "entry_conviction": "0.5", "fee": "0",
+        "funding": "0", "realized_pnl": "-50", "exit_type": "liquidation",
+    }])
+    text = "\n".join(validate(bad))
+    assert "liquidation pnl" in text
+
+
+def test_validate_fee_identity_with_env():
+    from dirty_fin_reports.simple.env_params import TradingEnvParams
+
+    env = TradingEnvParams(open_fee_rate=0.001, close_fee_rate=0.001)
+    rows = coerce_ledger([{
+        "trade_id": "1", "episode": "0", "symbol": "BTC", "side": "long",
+        "opened_at": "1", "closed_at": "5", "entry_price": "100",
+        "exit_price": "110", "notional": "1000", "leverage": "5",
+        "collateral": "200", "entry_conviction": "0.5", "fee": "0.5",
+        "funding": "0", "realized_pnl": "98", "exit_type": "take_profit",
+    }])
+    # expected fee = 1000 * 0.002 = 2.0; 0.5 is way off
+    text = "\n".join(validate(rows, env=env))
+    assert "fee≠notional" in text
+
+
 def test_validate_reports_data_problems():
     rows = coerce_ledger([
         {

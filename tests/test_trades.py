@@ -24,7 +24,7 @@ def _rows():
 
 def test_trade_stats_episode_0_hand_computed():
     rows = [t for t in _rows() if int(t["episode"]) == 0]
-    st = trade_stats(rows, base=1000.0, n_accounts=2)
+    st = trade_stats(rows, base=1000.0, n_accounts=1)
     assert st["num"] == 5
     assert st["net_pnl"] == pytest.approx(83.0)
     assert st["win_rate"] == pytest.approx(60.0)
@@ -35,9 +35,31 @@ def test_trade_stats_episode_0_hand_computed():
     assert st["expectancy_in_risks"] == pytest.approx(16.6 / 35.0, rel=1e-9)
     assert st["risk_reward"] == pytest.approx(51.0 / 35.0, rel=1e-9)
     assert st["max_dd_pnl"] == pytest.approx(70.0)
-    assert st["max_dd_pct"] == pytest.approx(100.0 * 70.0 / 2000.0)
+    assert st["max_dd_pct"] == pytest.approx(100.0 * 70.0 / 1000.0)
     assert st["sharpe_per_trade"] == pytest.approx(0.33453602856642134, rel=1e-9)
     assert st["sortino_per_trade"] == pytest.approx(3.32, rel=1e-9)
+
+
+def test_trade_stats_max_dd_is_worst_per_episode_not_serialized():
+    """Cross-episode cumsum must not invent a fake-account drawdown (Ref #5)."""
+    rows = [
+        {"episode": 0, "realized_pnl": 100.0},
+        {"episode": 0, "realized_pnl": -50.0},
+        {"episode": 1, "realized_pnl": -60.0},
+        {"episode": 1, "realized_pnl": 10.0},
+    ]
+    st = trade_stats(rows, base=1000.0)
+    ep0 = trade_stats([t for t in rows if t["episode"] == 0], base=1000.0)
+    ep1 = trade_stats([t for t in rows if t["episode"] == 1], base=1000.0)
+    assert ep0["max_dd_pnl"] == pytest.approx(50.0)
+    assert ep1["max_dd_pnl"] == pytest.approx(60.0)
+    assert st["max_dd_pnl"] == pytest.approx(60.0)
+    import numpy as np
+    cum = np.cumsum([t["realized_pnl"] for t in rows])
+    peak = np.maximum.accumulate(cum)
+    serialized_dd = float(-(cum - peak).min())
+    assert serialized_dd == pytest.approx(110.0)
+    assert st["max_dd_pnl"] < serialized_dd
 
 
 def test_trade_stats_episode_1_hand_computed():
